@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBS Hymnal Controller</title>
+  
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      /* OBS Yami Theme Colors */
+      --obs-bg: #1c1f24;
+      --obs-card: #2b2e38;
+      --obs-border: #121418;
+      --obs-border-light: #424755;
+      --obs-primary: #2e85e4;
+      --obs-primary-hover: #1e75d4;
+      --obs-btn-bg: #3e4451;
+      --obs-btn-hover: #4d5565;
+      --obs-text: #cccccc;
+      --obs-text-light: #ffffff;
+      --obs-input-bg: #121418;
+      --obs-success: #27ae60;
+      --obs-danger: #c0392b;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: transparent; color: var(--obs-text); font-family: 'Lato', sans-serif; overflow: hidden; }
+    
+    /* Control Dock Styles */
+    .dock-app { padding: 15px; display: flex; flex-direction: column; gap: 15px; background: var(--obs-bg); min-height: 100vh; overflow-y: auto; overflow-x: hidden; }
+    .card { background: var(--obs-card); border: 1px solid var(--obs-border); border-radius: 8px; padding: 16px; position: relative; }
+    .btn { padding: 10px 16px; background: var(--obs-primary); color: #ffffff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; transition: 0.2s;}
+    .btn:hover { background: var(--obs-primary-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-outline { background: var(--obs-btn-bg); color: var(--obs-text-light); border: 1px solid var(--obs-border); }
+    .btn-outline:hover { background: var(--obs-btn-hover); }
+    .btn-active { background: var(--obs-primary) !important; color: #ffffff !important; border-color: var(--obs-primary) !important; }
+    
+    .input { padding: 10px 12px; background: var(--obs-input-bg); border: 1px solid var(--obs-border); color: var(--obs-text-light); border-radius: 4px; width: 100%; font-size: 14px;}
+    .input:focus { outline: none; border-color: var(--obs-primary); }
+    
+    /* Search Dropdown */
+    .search-results { position: absolute; top: 100%; left: 0; right: 0; background: var(--obs-card); border: 1px solid var(--obs-border); border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+    .search-item { padding: 10px; border-bottom: 1px solid var(--obs-border-light); cursor: pointer; font-size: 13px; display: flex; align-items: center; }
+    .search-item:hover { background: var(--obs-btn-bg); }
+    .search-item-highlight { background: var(--obs-primary) !important; color: #ffffff !important; }
+    .search-item-highlight .search-num { color: #ffffff !important; }
+    .search-num { color: var(--obs-primary); font-weight: bold; width: 35px; }
+
+    .row { display: flex; gap: 10px; align-items: center; }
+    .verse-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 15px; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 13px; color: var(--obs-text); }
+    .form-group { margin-bottom: 12px; }
+    .form-label { display: block; font-size: 11px; color: var(--obs-text); margin-bottom: 4px; text-transform: uppercase; font-weight: bold; letter-spacing: 0.5px; }
+    textarea.input { resize: vertical; font-family: 'Lato', sans-serif; line-height: 1.4; }
+    
+    /* Output Styles (Reverted to vw/vh standard) */
+    .output-app { 
+      width: 100vw; 
+      height: 100vh; 
+      background: transparent; 
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      padding-bottom: 5vh;
+    }
+    
+    .output-lyrics { 
+      width: 90vw; 
+      text-align: center; 
+      color: white; 
+      font-weight: 900; 
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.8), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+      transition: opacity 0.3s ease-in-out; 
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Safe local storage wrapper
+    const safeStorage = {
+      getItem: (key) => { try { return localStorage.getItem(key); } catch(e) { return null; } },
+      setItem: (key, val) => { try { localStorage.setItem(key, val); } catch(e) { } }
+    };
+
+    // Output Window Component (For OBS Browser Source)
+    function OutputDisplay() {
+      const [outputState, setOutputState] = useState({ lines: [], clearOutput: true, settings: { fontSize: 48 } });
+
+      useEffect(() => {
+        const updateState = (data) => {
+          if (!data) return;
+          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+          if (!parsed.settings) parsed.settings = { fontSize: 48 }; 
+          setOutputState(parsed);
+        };
+
+        const updateFromStorage = () => {
+          updateState(safeStorage.getItem('obs_hymnal_state'));
+        };
+        
+        updateFromStorage();
+        window.addEventListener('storage', updateFromStorage);
+        const interval = setInterval(updateFromStorage, 200);
+        
+        const bc = new BroadcastChannel('obs_hymnal_sync');
+        bc.onmessage = (event) => updateState(event.data);
+
+        return () => {
+          window.removeEventListener('storage', updateFromStorage);
+          clearInterval(interval);
+          bc.close();
+        };
+      }, []);
+
+      return (
+        <div className="output-app">
+          <div className="output-lyrics" style={{ 
+            opacity: outputState.clearOutput || (!outputState.lines || outputState.lines.length === 0) ? 0 : 1,
+            fontSize: `${(outputState.settings && outputState.settings.fontSize) ? outputState.settings.fontSize : 48}px`,
+            lineHeight: 1.25
+          }}>
+            {outputState.lines && outputState.lines.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // Main Control Dock Component
+    function ControlDock() {
+      // Library State
+      const [activeDb, setActiveDb] = useState({});
+      const [customDb, setCustomDb] = useState({});
+      
+      // Active Song State
+      const [selectedHymn, setSelectedHymn] = useState(null);
+      const [pages, setPages] = useState([]);
+      const [pageIndex, setPageIndex] = useState(0);
+      const [currentPage, setCurrentPage] = useState(null);
+      const [clearOutput, setClearOutput] = useState(true);
+      
+      // Search State
+      const [searchQuery, setSearchQuery] = useState("");
+      const [showDropdown, setShowDropdown] = useState(false);
+      const [searchResults, setSearchResults] = useState([]);
+      const [highlightedIndex, setHighlightedIndex] = useState(-1);
+      const searchResultsRef = useRef(null);
+      
+      // Schedule State
+      const [schedule, setSchedule] = useState([]);
+      
+      // Settings State
+      const [showSettings, setShowSettings] = useState(false);
+      const [fontSize, setFontSize] = useState(48);
+      const [rowsVisible, setRowsVisible] = useState(4);
+      
+      // Custom Song Form State
+      const [showAddForm, setShowAddForm] = useState(false);
+      const [formNum, setFormNum] = useState("");
+      const [formTitle, setFormTitle] = useState("");
+      const [formVerses, setFormVerses] = useState([""]);
+      const [formChorus, setFormChorus] = useState("");
+      const [formBridge, setFormBridge] = useState("");
+
+      // Paste & Library Status State
+      const [showPasteArea, setShowPasteArea] = useState(false);
+      const [pasteContent, setPasteContent] = useState("");
+      const [libMessage, setLibMessage] = useState({ text: "", type: "" });
+
+      // Initialization
+      useEffect(() => {
+        const savedCustom = safeStorage.getItem("custom_obs_hymns");
+        if (savedCustom) {
+          const parsed = JSON.parse(savedCustom);
+          setCustomDb(parsed);
+          setActiveDb(parsed);
+        }
+        
+        const savedSchedule = safeStorage.getItem("obs_hymnal_schedule");
+        if (savedSchedule) setSchedule(JSON.parse(savedSchedule));
+
+        const savedSettings = safeStorage.getItem("obs_hymnal_settings");
+        if (savedSettings) {
+          const s = JSON.parse(savedSettings);
+          if (s.fontSize) setFontSize(s.fontSize);
+          if (s.rowsVisible) setRowsVisible(s.rowsVisible);
+        }
+      }, []);
+
+      // Search Logic
+      useEffect(() => {
+        if (!searchQuery) {
+          setSearchResults([]);
+          return;
+        }
+        const lowerQ = searchQuery.toLowerCase();
+        const results = Object.keys(activeDb)
+          .map(num => ({ num, ...activeDb[num] }))
+          .filter(h => h.num.includes(lowerQ) || h.title.toLowerCase().includes(lowerQ))
+          .slice(0, 20);
+        setSearchResults(results);
+        setHighlightedIndex(-1);
+      }, [searchQuery, activeDb]);
+
+      // Auto-scroll dropdown for keyboard navigation
+      useEffect(() => {
+        if (highlightedIndex >= 0 && searchResultsRef.current) {
+          const container = searchResultsRef.current;
+          const activeItem = container.children[highlightedIndex];
+          if (activeItem) {
+            const itemTop = activeItem.offsetTop;
+            const itemBottom = itemTop + activeItem.offsetHeight;
+            const containerTop = container.scrollTop;
+            const containerBottom = containerTop + container.clientHeight;
+            if (itemTop < containerTop) {
+              container.scrollTop = itemTop;
+            } else if (itemBottom > containerBottom) {
+              container.scrollTop = itemBottom - container.clientHeight;
+            }
+          }
+        }
+      }, [highlightedIndex]);
+
+      // Keyboard Shortcuts for Search and Global Control
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          if (document.activeElement.tagName === 'INPUT' && document.activeElement.placeholder.includes("Search")) {
+             if (!showDropdown || searchResults.length === 0) return;
+             if (e.key === "ArrowDown") {
+               e.preventDefault();
+               setHighlightedIndex(prev => Math.min(prev + 1, searchResults.length - 1));
+             } else if (e.key === "ArrowUp") {
+               e.preventDefault();
+               setHighlightedIndex(prev => Math.max(prev - 0, 0));
+             } else if (e.key === "Enter") {
+               e.preventDefault();
+               const targetIndex = highlightedIndex >= 0 ? highlightedIndex : 0;
+               if (searchResults[targetIndex]) {
+                 loadHymn(searchResults[targetIndex].num, searchResults[targetIndex]);
+                 document.activeElement.blur();
+               }
+             } else if (e.key === "Escape") {
+               setShowDropdown(false);
+             }
+             return;
+          }
+
+          if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+          switch (e.key) {
+            case 'ArrowRight':
+            case 'PageDown':
+            case ' ':
+              e.preventDefault();
+              if (pages.length > 0) setPageIndex(i => Math.min(pages.length - 1, i + 1));
+              break;
+            case 'ArrowLeft':
+            case 'PageUp':
+              e.preventDefault();
+              if (pages.length > 0) setPageIndex(i => Math.max(0, i - 1));
+              break;
+            case 'Escape':
+              e.preventDefault();
+              setClearOutput(true);
+              break;
+            case 'Enter':
+              e.preventDefault();
+              setClearOutput(false);
+              break;
+          }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [pages.length, showDropdown, searchResults, highlightedIndex]);
+
+      const bcRef = useRef(null);
+      useEffect(() => {
+        bcRef.current = new BroadcastChannel('obs_hymnal_sync');
+        return () => bcRef.current.close();
+      }, []);
+
+      useEffect(() => {
+        const activeLines = pages.length > 0 && !clearOutput ? pages[pageIndex].lines : [];
+        const state = {
+          lines: activeLines,
+          clearOutput,
+          settings: { fontSize }
+        };
+        safeStorage.setItem('obs_hymnal_state', JSON.stringify(state));
+        if (bcRef.current) bcRef.current.postMessage(state); 
+        
+        if (pages.length > 0) setCurrentPage(pages[pageIndex]);
+        safeStorage.setItem('obs_hymnal_settings', JSON.stringify({ fontSize, rowsVisible }));
+      }, [pageIndex, pages, clearOutput, fontSize, rowsVisible]);
+
+      useEffect(() => {
+        safeStorage.setItem("obs_hymnal_schedule", JSON.stringify(schedule));
+      }, [schedule]);
+
+      const loadHymn = (num, hymnData) => {
+        let generatedPages = [];
+        
+        const chunkLines = (text, type, label) => {
+          if (!text) return;
+          const lines = text.split('\n').filter(l => l.trim() !== '');
+          for (let i = 0; i < lines.length; i += rowsVisible) {
+            generatedPages.push({
+              type,
+              label,
+              verseIndex: type === 'verse' ? parseInt(label.replace('V', '')) - 1 : null,
+              lines: lines.slice(i, i + rowsVisible)
+            });
+          }
+        };
+
+        if (hymnData.verses) {
+          hymnData.verses.forEach((verse, i) => {
+            chunkLines(verse, 'verse', `V${i + 1}`);
+            if (hymnData.chorus) {
+              chunkLines(hymnData.chorus, 'chorus', 'Chorus');
+            }
+          });
+        }
+        
+        if (hymnData.bridge) {
+           chunkLines(hymnData.bridge, 'bridge', 'Bridge');
+        }
+
+        setSelectedHymn({ number: num, ...hymnData });
+        setPages(generatedPages);
+        setPageIndex(0);
+        setClearOutput(false);
+        setSearchQuery("");
+        setShowDropdown(false);
+      };
+
+      const jumpToSection = (type, index = null) => {
+        const foundIdx = pages.findIndex(p => p.type === type && (index === null || p.verseIndex === index));
+        if (foundIdx !== -1) {
+          setPageIndex(foundIdx);
+          setClearOutput(false);
+        }
+      };
+
+      const addToSchedule = (hymn) => {
+        if (schedule.length >= 10) return alert("Schedule full (Max 10).");
+        setSchedule([...schedule, { id: Date.now(), num: hymn.number }]);
+      };
+
+      const removeFromSchedule = (id) => {
+        setSchedule(schedule.filter(item => item.id !== id));
+      };
+
+      const openAddForm = () => {
+        setFormNum(""); setFormTitle(""); setFormVerses([""]); setFormChorus(""); setFormBridge("");
+        setShowAddForm(true);
+      };
+
+      const openEditForm = (hymn) => {
+        setFormNum(hymn.number); setFormTitle(hymn.title); 
+        setFormVerses(hymn.verses || [""]); setFormChorus(hymn.chorus || ""); setFormBridge(hymn.bridge || "");
+        setShowAddForm(true);
+      };
+
+      const saveSong = () => {
+        if (!formNum || !formTitle) return alert("Number and Title are required.");
+        const newSong = {
+          title: formTitle,
+          verses: formVerses.filter(v => v.trim() !== ""),
+        };
+        if (formChorus.trim()) newSong.chorus = formChorus;
+        if (formBridge.trim()) newSong.bridge = formBridge;
+
+        const merged = { ...customDb, [formNum]: newSong };
+        setCustomDb(merged);
+        setActiveDb({ ...activeDb, ...merged });
+        safeStorage.setItem("custom_obs_hymns", JSON.stringify(merged));
+        setShowAddForm(false);
+      };
+
+      const handleImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const imported = JSON.parse(e.target.result);
+            const merged = { ...customDb, ...imported };
+            setCustomDb(merged);
+            setActiveDb({ ...activeDb, ...merged });
+            safeStorage.setItem("custom_obs_hymns", JSON.stringify(merged));
+            setLibMessage({ text: "Library imported successfully!", type: "success" });
+            setTimeout(() => setLibMessage({ text: "", type: "" }), 3000);
+          } catch (err) {
+            setLibMessage({ text: "Error parsing JSON file.", type: "error" });
+            setTimeout(() => setLibMessage({ text: "", type: "" }), 3000);
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const handlePasteSave = () => {
+        try {
+          const imported = JSON.parse(pasteContent);
+          const merged = { ...customDb, ...imported };
+          setCustomDb(merged);
+          setActiveDb({ ...activeDb, ...merged });
+          safeStorage.setItem("custom_obs_hymns", JSON.stringify(merged));
+          setLibMessage({ text: "Library pasted successfully!", type: "success" });
+          setShowPasteArea(false);
+          setPasteContent("");
+          setTimeout(() => setLibMessage({ text: "", type: "" }), 3000);
+        } catch (err) {
+          setLibMessage({ text: "Error: Invalid JSON format.", type: "error" });
+          setTimeout(() => setLibMessage({ text: "", type: "" }), 3000);
+        }
+      };
+
+      const downloadCustomSongs = () => {
+        const dataStr = JSON.stringify(customDb, null, 2);
+        const blob = new Blob([dataStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "custom_obs_hymns.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div className="dock-app">
+          
+          <div className="card">
+            <h2 style={{ color: "var(--obs-primary)", fontSize: 18, marginBottom: 15 }}>SDA Hymnal & Praise</h2>
+            
+            <div style={{ position: "relative" }}>
+              <input 
+                className="input" 
+                type="text" 
+                placeholder="Search by Title or #..." 
+                value={searchQuery} 
+                onChange={e => { setSearchQuery(e.target.value); setShowDropdown(true); }} 
+                onFocus={() => setShowDropdown(true)}
+              />
+              
+              {showDropdown && searchResults.length > 0 && (
+                <div className="search-results" ref={searchResultsRef}>
+                  {searchResults.map((res, index) => (
+                    <div 
+                      key={res.num} 
+                      className={`search-item ${highlightedIndex === index ? 'search-item-highlight' : ''}`} 
+                      onClick={() => loadHymn(res.num, res)}
+                    >
+                      <span className="search-num">#{res.num}</span>
+                      <span>{res.title}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {showDropdown && searchQuery && searchResults.length === 0 && (
+                 <div className="search-results"><div className="search-item">No songs found.</div></div>
+              )}
+            </div>
+
+            <button 
+              className="btn btn-outline" 
+              style={{ width: "100%", marginTop: 15, borderColor: clearOutput ? "var(--obs-success)" : "var(--obs-danger)", color: clearOutput ? "var(--obs-success)" : "var(--obs-danger)" }} 
+              onClick={() => setClearOutput(!clearOutput)}
+            >
+              {clearOutput ? "▶ Show Lyrics on Stream" : "⏸ Clear Lyrics from Stream"}
+            </button>
+          </div>
+
+          {selectedHymn && (
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+                <h3 style={{ fontSize: 16, margin: 0, color: "var(--obs-text-light)" }}>#{selectedHymn.number} - {selectedHymn.title}</h3>
+                <div style={{ display: 'flex', gap: '5px' }}>
+                  <button className="btn btn-outline" style={{ padding: '4px 8px', fontSize: '11px', borderColor: 'var(--obs-success)', color: 'var(--obs-success)' }} onClick={() => addToSchedule(selectedHymn)}>➕ Schedule</button>
+                  <button className="btn btn-outline" style={{ padding: '4px 8px', fontSize: '11px', borderColor: 'var(--obs-text-light)', color: 'var(--obs-text-light)' }} onClick={() => openEditForm(selectedHymn)}>✏️ Edit</button>
+                </div>
+              </div>
+              
+              <div className="verse-grid">
+                {selectedHymn.verses && selectedHymn.verses.map((_, i) => {
+                  const isActive = currentPage && currentPage.type === 'verse' && currentPage.verseIndex === i;
+                  return (
+                    <button key={i} className={`btn btn-outline ${isActive ? 'btn-active' : ''}`} onClick={() => jumpToSection('verse', i)}>
+                      Verse {i + 1}
+                    </button>
+                  );
+                })}
+                {selectedHymn.chorus && (() => {
+                  const isActive = currentPage && currentPage.type === 'chorus';
+                  return (
+                    <button className={`btn btn-outline ${isActive ? 'btn-active' : ''}`} onClick={() => jumpToSection('chorus')}>
+                      Chorus
+                    </button>
+                  );
+                })()}
+                {selectedHymn.bridge && (() => {
+                  const isActive = currentPage && currentPage.type === 'bridge';
+                  return (
+                    <button className={`btn btn-outline ${isActive ? 'btn-active' : ''}`} onClick={() => jumpToSection('bridge')}>
+                      Bridge
+                    </button>
+                  );
+                })()}
+              </div>
+
+              <div className="row" style={{ marginTop: 15 }}>
+                <button className="btn" style={{ flex: 1, background: "var(--obs-btn-bg)", color: "var(--obs-text-light)" }} onClick={() => setPageIndex(i => Math.max(0, i - 1))} disabled={pageIndex === 0}>← Prev Line</button>
+                <button className="btn" style={{ flex: 1 }} onClick={() => setPageIndex(i => Math.min(pages.length - 1, i + 1))} disabled={pageIndex === pages.length - 1}>Next Line →</button>
+              </div>
+              
+              <p style={{ textAlign: "center", fontSize: 12, marginTop: 12, color: "var(--obs-text)" }}>
+                Slide {pageIndex + 1} of {pages.length} {currentPage ? `(${currentPage.label})` : ''}
+              </p>
+              <p style={{ textAlign: "center", fontSize: 11, marginTop: 4, color: "var(--obs-border-light)" }}>
+                Shortcuts: [Space] / [Arrows] to navigate • [Esc] to clear • [Enter] to show
+              </p>
+            </div>
+          )}
+
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <h3 style={{ fontSize: 14, margin: 0, color: "var(--obs-text)", textTransform: "uppercase" }}>📋 Service Schedule ({schedule.length}/10)</h3>
+              {schedule.length > 0 && (
+                <button onClick={() => setSchedule([])} style={{ background: "transparent", border: "none", color: "var(--obs-danger)", cursor: "pointer", fontSize: "11px", textDecoration: "underline" }}>Clear All</button>
+              )}
+            </div>
+            {schedule.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--obs-text)", fontStyle: "italic", textAlign: "center", padding: "10px 0" }}>
+                No songs in schedule.<br/>Load a song and click "➕ Schedule" to build your setlist.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {schedule.map((item) => {
+                  const hymnData = activeDb[item.num];
+                  if (!hymnData) return null;
+                  const isLoaded = selectedHymn && selectedHymn.number.toString() === item.num.toString();
+                  return (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: isLoaded ? "var(--obs-btn-bg)" : "var(--obs-input-bg)", padding: "8px 10px", borderRadius: "4px", border: isLoaded ? "1px solid var(--obs-primary)" : "1px solid var(--obs-border)" }}>
+                      <div style={{ cursor: "pointer", flex: 1, fontSize: "13px" }} onClick={() => loadHymn(item.num, hymnData)}>
+                        <span style={{ color: "var(--obs-primary)", fontWeight: "bold", marginRight: "8px" }}>#{item.num}</span>
+                        <span style={{ color: isLoaded ? "var(--obs-text-light)" : "var(--obs-text)" }}>{hymnData.title}</span>
+                      </div>
+                      <button onClick={() => removeFromSchedule(item.id)} style={{ background: "transparent", border: "none", color: "var(--obs-danger)", cursor: "pointer", fontSize: "16px", padding: "0 5px" }} title="Remove from schedule">×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {showAddForm && (
+            <div className="card" style={{ border: "1px solid var(--obs-success)" }}>
+              <h3 style={{ color: "var(--obs-success)", marginBottom: 15 }}>
+                {activeDb[formNum] ? "✏️ Edit Song" : "➕ Add Custom Song"}
+              </h3>
+              
+              <div className="form-group">
+                <label className="form-label">Song Number</label>
+                <input className="input" type="number" placeholder="e.g. 801" value={formNum} onChange={e => setFormNum(e.target.value)} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Song Title</label>
+                <input className="input" type="text" placeholder="e.g. My Praise Song" value={formTitle} onChange={e => setFormTitle(e.target.value)} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Chorus (Optional)</label>
+                <textarea className="input" rows="3" placeholder="Chorus lyrics... (Auto-repeats after verses)" value={formChorus} onChange={e => setFormChorus(e.target.value)} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Bridge (Optional)</label>
+                <textarea className="input" rows="3" placeholder="Bridge lyrics..." value={formBridge} onChange={e => setFormBridge(e.target.value)} />
+              </div>
+
+              {formVerses.map((v, i) => (
+                <div className="form-group" key={i}>
+                  <label className="form-label">Verse {i + 1}</label>
+                  <textarea className="input" rows="3" placeholder={`Verse ${i + 1} lyrics...`} value={v} onChange={e => {
+                    const newV = [...formVerses];
+                    newV[i] = e.target.value;
+                    setFormVerses(newV);
+                  }} />
+                </div>
+              ))}
+
+              <button className="btn btn-outline" style={{ width: "100%", marginBottom: 15, fontSize: "12px", borderStyle: "dashed" }} onClick={() => setFormVerses([...formVerses, ""])}>
+                + Add Another Verse
+              </button>
+
+              <div className="row">
+                <button className="btn" style={{ flex: 1, background: "var(--obs-success)", color: "white" }} onClick={saveSong}>Save Song</button>
+                <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setShowAddForm(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          <div className="card">
+             <h3 style={{ fontSize: 14, marginBottom: 10, color: "var(--obs-text)", textTransform: "uppercase" }}>Library Data</h3>
+             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                 <button className="btn btn-outline" style={{ flex: 1, minWidth: "45%", padding: "8px 5px", fontSize: "12px", borderColor: "var(--obs-success)", color: "var(--obs-success)" }} onClick={openAddForm}>
+                     ➕ Add Song
+                 </button>
+                 <button className="btn btn-outline" style={{ flex: 1, minWidth: "45%", padding: "8px 5px", fontSize: "12px", borderColor: "var(--obs-text-light)", color: "var(--obs-text-light)" }} onClick={downloadCustomSongs}>
+                     💾 Export JSON
+                 </button>
+                 <label className="btn btn-outline" style={{ flex: 1, minWidth: "45%", padding: "8px 5px", fontSize: "12px", borderColor: "var(--obs-primary)", color: "var(--obs-primary)", textAlign: "center", cursor: "pointer", margin: 0 }}>
+                     📂 Import File
+                     <input type="file" accept=".json" style={{ display: "none" }} onChange={handleImport} />
+                 </label>
+                 <button className="btn btn-outline" style={{ flex: 1, minWidth: "45%", padding: "8px 5px", fontSize: "12px", borderColor: "var(--obs-primary)", color: "var(--obs-primary)" }} onClick={() => setShowPasteArea(!showPasteArea)}>
+                     📋 Paste JSON
+                 </button>
+             </div>
+
+             {showPasteArea && (
+               <div style={{ marginTop: 15 }}>
+                 <textarea 
+                   className="input" 
+                   rows="4" 
+                   placeholder='Paste JSON here (e.g. { "801": { "title": "Song", "verses": ["Line 1..."] } })'
+                   value={pasteContent}
+                   onChange={e => setPasteContent(e.target.value)}
+                 />
+                 <div className="row" style={{ marginTop: 10 }}>
+                   <button className="btn" style={{ flex: 1, background: "var(--obs-primary)", color: "white" }} onClick={handlePasteSave}>Save Pasted JSON</button>
+                   <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => { setShowPasteArea(false); setPasteContent(""); }}>Cancel</button>
+                 </div>
+               </div>
+             )}
+
+             {libMessage.text && (
+               <div style={{ marginTop: 10, fontSize: 13, color: libMessage.type === 'error' ? 'var(--obs-danger)' : 'var(--obs-success)', textAlign: 'center', fontWeight: 'bold' }}>
+                 {libMessage.text}
+               </div>
+             )}
+          </div>
+
+          <div className="card">
+             <div 
+               style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+               onClick={() => setShowSettings(!showSettings)}
+             >
+               <h3 style={{ fontSize: 14, margin: 0, color: "var(--obs-text)", textTransform: "uppercase" }}>⚙️ Display Settings</h3>
+               <span style={{ color: "var(--obs-text)" }}>{showSettings ? '▲' : '▼'}</span>
+             </div>
+             
+             {showSettings && (
+               <div style={{ marginTop: 15 }}>
+                 <div className="setting-row">
+                    <span>Font Size ({fontSize}px)</span>
+                    <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} />
+                 </div>
+                 <div className="setting-row">
+                    <span>Lines per Slide ({rowsVisible})</span>
+                    <input type="range" min="1" max="8" value={rowsVisible} onChange={e => setRowsVisible(Number(e.target.value))} />
+                 </div>
+               </div>
+             )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── App Initialization (Auto-Detect Width) ───────────────────────────────
+    function App() {
+      // Wide window (Stream Source) = Output, Narrow window (Dock) = Controller
+      const [isOutputMode, setIsOutputMode] = useState(window.innerWidth > 800);
+      
+      useEffect(() => {
+        const handleResize = () => setIsOutputMode(window.innerWidth > 800);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+      }, []);
+      
+      return isOutputMode ? <OutputDisplay /> : <ControlDock />;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
