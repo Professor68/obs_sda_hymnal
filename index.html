@@ -7,7 +7,8 @@
   
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <!-- Updated to modern Babel standalone to support modern React syntax -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   
   <link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
 
@@ -222,7 +223,16 @@
         };
       }, []);
 
-      if (!lyrics || lyrics.length === 0) return null;
+      // If no lyrics are active, show a subtle waiting message instead of a blank screen
+      if (!lyrics || lyrics.length === 0) {
+        return (
+          <div className="output-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
+             <div style={{ color: 'rgba(255, 255, 255, 0.2)', fontStyle: 'italic', fontSize: '24px' }}>
+                Waiting for hymnal output...
+             </div>
+          </div>
+        );
+      }
 
       // Slice the lyrics based on user setting
       const displayedLyrics = lyrics.slice(0, rowsVisible);
@@ -260,8 +270,7 @@
           if (rawData) {
             const parsed = JSON.parse(rawData);
             
-            // IDEA 1 FIX: Strict Data Validation
-            // We ensure we only load valid arrays, ignoring malformed data that causes the "white screen"
+            // Strict Data Validation
             let validDb = {};
             let badEntriesFound = 0;
 
@@ -271,10 +280,8 @@
 
             Object.keys(parsed).forEach(key => {
               if (Array.isArray(parsed[key])) {
-                  // Valid format, keep it
                   validDb[key] = parsed[key];
               } else {
-                  // Malformed data! quarantine it instead of crashing.
                   badEntriesFound++;
               }
             });
@@ -320,7 +327,6 @@
         channel.postMessage({ type: 'CLEAR_OUTPUT' });
       };
 
-      // IDEAS 2 & 3 FIX: Nuclear Reset Function
       const handleHardReset = () => {
         const userInput = prompt('DANGER: This will delete your entire hymnal database.\n\nTo proceed, type the word DELETE below:');
         
@@ -337,8 +343,6 @@
         }
       };
 
-      // IDEA 1 FIX: Safe Search
-      // Wrap the filter logic in try/catch so if a weird string sneaks in, it won't crash React
       const filteredSongs = Object.keys(activeDb).filter(title => {
         try {
           if (!title) return false;
@@ -365,7 +369,7 @@
           )}
 
           {!showSettings ? (
-            <>
+            <React.Fragment>
               <input 
                 type="text" 
                 className="search-input" 
@@ -386,7 +390,7 @@
                   ))
                 )}
               </div>
-            </>
+            </React.Fragment>
           ) : (
             <div className="settings-panel">
                <h4 style={{ margin: '0 0 15px 0' }}>Display Settings</h4>
@@ -411,7 +415,6 @@
                  Upload Hymnal File (.json)
                </button>
 
-               {/* Ideas 2 & 3: The Danger Zone */}
                <div className="danger-zone">
                   <p style={{ fontSize: 12, color: 'var(--obs-text)', marginTop: 0 }}>Troubleshooting / Reset</p>
                   <button className="btn btn-danger" style={{ width: '100%' }} onClick={handleHardReset}>
