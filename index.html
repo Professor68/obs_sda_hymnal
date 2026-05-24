@@ -300,8 +300,36 @@
         if (typeof parsed !== 'object' || parsed === null) throw new Error("Invalid structured data.");
         
         Object.keys(parsed).forEach(key => {
-          if (Array.isArray(parsed[key])) { validDb[key] = parsed[key]; }
-          else { badEntriesFound++; }
+          const item = parsed[key];
+          
+          // Format 1: Legacy Array Format -> {"1 - Song": ["Lyric", "Lyric"]}
+          if (Array.isArray(item)) { 
+            validDb[key] = item; 
+          } 
+          // Format 2: New Nested Object Format -> {"1": {"title": "Song", "verses": ["..."]}}
+          else if (item && typeof item === 'object' && item.title) {
+            const newTitle = isNaN(key) ? item.title : `${key} - ${item.title}`;
+            let compiledLyrics = [];
+            
+            if (Array.isArray(item.verses)) {
+              item.verses.forEach(verse => {
+                if (typeof verse === 'string') compiledLyrics.push(...verse.split('\n'));
+                
+                // Append chorus after each verse if the song has one
+                if (item.chorus && typeof item.chorus === 'string') {
+                  compiledLyrics.push(...item.chorus.split('\n'));
+                }
+              });
+            } else if (item.chorus && typeof item.chorus === 'string') {
+              compiledLyrics.push(...item.chorus.split('\n'));
+            }
+            
+            validDb[newTitle] = compiledLyrics;
+          } 
+          // Unknown format
+          else { 
+            badEntriesFound++; 
+          }
         });
 
         if (badEntriesFound > 0) setDbError(`Ignored ${badEntriesFound} corrupted song(s).`);
