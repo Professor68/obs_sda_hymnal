@@ -83,6 +83,11 @@
     .active-slide .slide-label { color: rgba(255, 255, 255, 0.8); }
     .slide-preview { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--obs-text-light); }
 
+    /* Editor View Styles */
+    .editor-section { background: var(--obs-input-bg); padding: 10px; border-radius: 4px; margin-bottom: 10px; border: 1px solid var(--obs-border-light); }
+    .editor-label-input { background: transparent; border: none; color: var(--obs-primary); font-weight: bold; font-size: 14px; width: 150px; outline: none; }
+    .editor-label-input:focus { border-bottom: 1px solid var(--obs-primary); }
+
     /* Output Display Styles */
     .output-container { width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 5vh; background-color: transparent; }
     .lyric-box { background-color: transparent; color: white; text-align: center; padding: 20px 40px; border-radius: 8px; text-shadow: 2px 2px 6px rgba(0,0,0,1), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; font-weight: 700; width: 90%; max-width: 1200px; transition: opacity 0.25s ease-in-out; }
@@ -105,7 +110,7 @@
     // ── Output Display (For OBS Browser Source overlay) ──────────────────────
     function OutputDisplay() {
       const [lyrics, setLyrics] = useState([]);
-      const [fontSize, setFontSize] = useState(48);
+      const [fontSize, setFontSize] = useState(32);
       const [fadeClass, setFadeClass] = useState('fade-in');
 
       useEffect(() => {
@@ -174,14 +179,20 @@
       const [schedule, setSchedule] = useState([]);
       const [jsonPaste, setJsonPaste] = useState('');
       
-      const [fontSize, setFontSize] = useState(48);
-      const [rowsVisible, setRowsVisible] = useState(4);
+      const [fontSize, setFontSize] = useState(32);
+      const [rowsVisible, setRowsVisible] = useState(2);
       const [dbError, setDbError] = useState(null);
       const fileInputRef = useRef(null);
 
       // Presenter State
       const [liveSong, setLiveSong] = useState(null);
       const [liveSlide, setLiveSlide] = useState(0);
+
+      // Editor State
+      const [editingSong, setEditingSong] = useState(null); // 'NEW' or 'Song Title'
+      const [editForm, setEditForm] = useState({ title: '', stanzas: [] });
+      const [editError, setEditError] = useState(null);
+      const [confirmDelete, setConfirmDelete] = useState(false);
 
       useEffect(() => {
         loadDatabase();
@@ -199,16 +210,11 @@
         Object.keys(parsed).forEach(key => {
           const item = parsed[key];
           
-          // 1. Is it already formatted into Stanzas? (e.g. reloading previous session)
           if (Array.isArray(item) && item.length > 0 && item[0].label && item[0].lines) {
             validDb[key] = item;
-          } 
-          // 2. Legacy Flat Array -> Map to a single Stanza block
-          else if (Array.isArray(item)) { 
+          } else if (Array.isArray(item)) { 
             validDb[key] = [{ label: 'Lyrics', lines: item }];
-          } 
-          // 3. New Nested Object Format -> Map out Verses and Choruses
-          else if (item && typeof item === 'object' && item.title) {
+          } else if (item && typeof item === 'object' && item.title) {
             const newTitle = isNaN(key) ? item.title : `${key} - ${item.title}`;
             let stanzas = [];
             let chorusLines = item.chorus && typeof item.chorus === 'string' ? item.chorus.split('\n') : null;
@@ -222,8 +228,7 @@
               stanzas.push({ label: 'Chorus', lines: chorusLines });
             }
             validDb[newTitle] = stanzas;
-          } 
-          else { badEntriesFound++; }
+          } else { badEntriesFound++; }
         });
 
         if (badEntriesFound > 0) setDbError(`Ignored ${badEntriesFound} corrupted song(s).`);
@@ -274,7 +279,6 @@
       };
 
       // ── PRESENTER LOGIC ──────────────────────────────────────────────────
-      // Dynamically chunks the verses/choruses based on "Lines per Slide" setting
       const presentationSlides = useMemo(() => {
          if (!liveSong || !activeDb[liveSong]) return [];
          let slides = [];
@@ -289,14 +293,12 @@
          return slides;
       }, [liveSong, activeDb, rowsVisible]);
 
-      // Ensures we don't go out of bounds if rowsVisible changes while live
       useEffect(() => {
         if (liveSong && presentationSlides.length > 0) {
            if (liveSlide >= presentationSlides.length) setLiveSlide(presentationSlides.length - 1);
         }
       }, [presentationSlides, liveSong, liveSlide]);
 
-      // Sync to output whenever slide changes
       useEffect(() => {
         if (liveSong && presentationSlides[liveSlide]) {
           const slide = presentationSlides[liveSlide];
@@ -306,7 +308,6 @@
         }
       }, [liveSong, liveSlide, presentationSlides, fontSize]);
 
-      // Arrow Key Navigation Support
       useEffect(() => {
          const handleKeyDown = (e) => {
             if (!liveSong) return;
@@ -344,10 +345,63 @@
           setActiveDb({});
           setSearchTerm('');
           setLiveSong(null);
+          setEditingSong(null);
           setDbError(null);
           channel.postMessage({ type: 'CLEAR_OUTPUT' });
           alert('Database wiped.');
         }
+      };
+
+      // ── EDITOR LOGIC ─────────────────────────────────────────────────────
+      const openEditor = (title) => {
+         setEditError(null);
+         setConfirmDelete(false);
+         if (title === 'NEW') {
+            setEditForm({ title: '', stanzas: [{ label: 'Verse 1', text: '' }] });
+            setEditingSong('NEW');
+         } else {
+            const stanzas = activeDb[title].map(s => ({
+               label: s.label,
+               text: s.lines.join('\n')
+            }));
+            setEditForm({ title, stanzas });
+            setEditingSong(title);
+         }
+         setShowSettings(false);
+         setLiveSong(null);
+      };
+
+      const saveSong = () => {
+         if (!editForm.title.trim()) return setEditError("Song title is required.");
+         if (editForm.stanzas.length === 0) return setEditError("Add at least one section (Verse, Chorus, etc.)");
+         if (editingSong === 'NEW' && activeDb[editForm.title]) return setEditError("A song with this title already exists.");
+
+         const newDb = { ...activeDb };
+         
+         // If editing an existing song and changing the title, clean up the old key and schedule
+         if (editingSong !== 'NEW' && editingSong !== editForm.title) {
+            delete newDb[editingSong];
+            setSchedule(schedule.map(t => t === editingSong ? editForm.title : t));
+         }
+
+         // Format stanzas for DB
+         newDb[editForm.title] = editForm.stanzas.map(s => ({
+            label: s.label || 'Section',
+            lines: s.text.split('\n').filter(line => line.trim() !== '')
+         }));
+
+         setActiveDb(newDb);
+         localStorage.setItem(STORAGE_KEY, JSON.stringify(newDb));
+         setEditingSong(null);
+      };
+
+      const deleteSong = () => {
+         const newDb = { ...activeDb };
+         delete newDb[editingSong];
+         setActiveDb(newDb);
+         localStorage.setItem(STORAGE_KEY, JSON.stringify(newDb));
+         setSchedule(schedule.filter(t => t !== editingSong));
+         setEditingSong(null);
       };
 
       const filteredSongs = Object.keys(activeDb).filter(title => {
@@ -368,7 +422,7 @@
 
           {dbError && <div className="error-msg">⚠️ {dbError}</div>}
 
-          {/* DYNAMIC VIEW SWAP: Show Presenter View OR Library/Schedule */}
+          {/* DYNAMIC VIEW SWAP: Presenter OR Editor OR Library */}
           {liveSong ? (
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
@@ -400,6 +454,76 @@
                  ))}
               </div>
             </div>
+          ) : editingSong ? (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 15 }}>
+                 <h3 style={{ margin: 0, flex: 1 }}>{editingSong === 'NEW' ? 'Add New Song' : 'Edit Song'}</h3>
+                 <button className="btn btn-danger" onClick={() => setEditingSong(null)}>Cancel</button>
+                 <button className="btn btn-primary" style={{ marginLeft: 10 }} onClick={saveSong}>Save</button>
+              </div>
+
+              {editError && <div className="error-msg">⚠️ {editError}</div>}
+
+              <div className="song-list" style={{ border: 'none', padding: '0 5px 0 0', backgroundColor: 'transparent' }}>
+                 <label style={{ display: 'block', fontSize: 12, marginBottom: 5 }}>Song Title</label>
+                 <input 
+                   className="search-input" 
+                   value={editForm.title} 
+                   onChange={e => setEditForm({...editForm, title: e.target.value})} 
+                   placeholder="e.g. 1 - Amazing Grace" 
+                 />
+
+                 {editForm.stanzas.map((stanza, idx) => (
+                     <div key={idx} className="editor-section">
+                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                             <input 
+                                className="editor-label-input"
+                                value={stanza.label}
+                                onChange={e => {
+                                    const newStanzas = [...editForm.stanzas];
+                                    newStanzas[idx].label = e.target.value;
+                                    setEditForm({...editForm, stanzas: newStanzas});
+                                }}
+                                placeholder="e.g. Verse 1, Chorus"
+                             />
+                             <button className="action-btn remove" style={{ padding: 0 }} onClick={() => {
+                                 const newStanzas = editForm.stanzas.filter((_, i) => i !== idx);
+                                 setEditForm({...editForm, stanzas: newStanzas});
+                             }} title="Remove Section">✖</button>
+                         </div>
+                         <textarea 
+                            className="paste-area" 
+                            style={{ height: '80px', marginBottom: 0, backgroundColor: 'var(--obs-bg)' }}
+                            value={stanza.text}
+                            onChange={e => {
+                                const newStanzas = [...editForm.stanzas];
+                                newStanzas[idx].text = e.target.value;
+                                setEditForm({...editForm, stanzas: newStanzas});
+                            }}
+                            placeholder="Type or paste lyrics for this section here..."
+                         />
+                     </div>
+                 ))}
+                 
+                 <button className="btn" style={{ width: '100%', marginTop: 5 }} onClick={() => {
+                     setEditForm({...editForm, stanzas: [...editForm.stanzas, { label: 'Verse', text: '' }]});
+                 }}>➕ Add Section</button>
+
+                 {editingSong !== 'NEW' && (
+                    <div style={{ marginTop: 30, borderTop: '1px solid var(--obs-border-light)', paddingTop: 15 }}>
+                        {!confirmDelete ? (
+                           <button className="btn" style={{ width: '100%', color: 'var(--obs-danger)' }} onClick={() => setConfirmDelete(true)}>
+                             🗑️ Delete Song
+                           </button>
+                        ) : (
+                           <button className="btn btn-danger" style={{ width: '100%' }} onClick={deleteSong}>
+                             ⚠️ Tap again to confirm delete
+                           </button>
+                        )}
+                    </div>
+                 )}
+              </div>
+            </div>
           ) : (
             <React.Fragment>
               <div className="tab-bar">
@@ -421,11 +545,14 @@
                     <button className="btn" onClick={() => setSearchMode(searchMode === 'text' ? 'number' : 'text')} title="Toggle Search Mode">
                       {searchMode === 'text' ? 'Aa' : '123'}
                     </button>
+                    <button className="btn btn-primary" onClick={() => openEditor('NEW')} title="Create New Song">
+                      ➕ New
+                    </button>
                   </div>
                   <div className="song-list">
                     {Object.keys(activeDb).length === 0 ? (
                        <div style={{ padding: 20, textAlign: 'center', color: 'var(--obs-border-light)' }}>
-                         No songs found. Expand Settings ▼ to upload.
+                         No songs found. Click "➕ New" or expand Settings ▼ to upload.
                        </div>
                     ) : (
                       filteredSongs.map((title) => (
@@ -433,6 +560,7 @@
                           <div className="song-title-click" onClick={() => startPresentation(title)}>
                             {title}
                           </div>
+                          <button className="action-btn" onClick={() => openEditor(title)} title="Edit Song">✏️</button>
                           <button className="action-btn" onClick={() => !schedule.includes(title) && setSchedule([...schedule, title])} title="Add to Schedule">➕</button>
                         </div>
                       ))
@@ -462,62 +590,64 @@
             </React.Fragment>
           )}
 
-          {/* Original Accordion Settings Layout */}
-          <div className="settings-panel">
-             <div className="setting-row" onClick={() => setShowSettings(!showSettings)} style={{ cursor: 'pointer', marginBottom: 0 }}>
-                <h4 style={{ margin: 0 }}>Settings & Database</h4>
-                <span style={{ color: "var(--obs-text)" }}>{showSettings ? '▲' : '▼'}</span>
-             </div>
-             
-             {showSettings && (
-               <div style={{ marginTop: 15, maxHeight: '40vh', overflowY: 'auto', paddingRight: '5px' }}>
-                 <div className="setting-row">
-                    <span>Font Size ({fontSize}px)</span>
-                    <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} />
-                 </div>
-                 <div className="setting-row">
-                    <span>Lines per Slide ({rowsVisible})</span>
-                    <input type="range" min="1" max="8" value={rowsVisible} onChange={e => setRowsVisible(Number(e.target.value))} />
-                 </div>
-                 
-                 <h4 style={{ margin: '20px 0 10px 0', borderTop: '1px solid var(--obs-border-light)', paddingTop: 15 }}>Manage Database</h4>
-                 
-                 <button className="btn" style={{ width: '100%', marginBottom: 10, backgroundColor: 'var(--obs-btn-bg)' }} onClick={handleDownloadBackup}>
-                   💾 Download Backup
-                 </button>
-
-                 <input 
-                   type="file" 
-                   accept=".json" 
-                   ref={fileInputRef} 
-                   style={{ display: 'none' }} 
-                   onChange={handleFileUpload} 
-                 />
-                 <button className="btn btn-primary" style={{ width: '100%', marginBottom: 10 }} onClick={() => fileInputRef.current.click()}>
-                   📁 Upload JSON File
-                 </button>
-
-                 <div style={{ marginTop: 10 }}>
-                   <p style={{ fontSize: 12, margin: '0 0 5px 0', color: 'var(--obs-text)' }}>Or Paste JSON Data:</p>
-                   <textarea 
-                     className="paste-area" 
-                     value={jsonPaste} 
-                     onChange={e => setJsonPaste(e.target.value)}
-                     placeholder='{"1 - Song": ["Lyric 1", "Lyric 2"]}'
-                   />
-                   <button className="btn" style={{ width: '100%' }} onClick={handlePasteJSON}>
-                     Load Pasted Data
-                   </button>
-                 </div>
-
-                 <div className="danger-zone">
-                    <button className="btn btn-danger" style={{ width: '100%' }} onClick={handleHardReset}>
-                      ⚠️ Wipe & Reset Database
-                    </button>
-                 </div>
+          {/* Original Accordion Settings Layout (hidden when presenting or editing) */}
+          {(!liveSong && !editingSong) && (
+            <div className="settings-panel">
+               <div className="setting-row" onClick={() => setShowSettings(!showSettings)} style={{ cursor: 'pointer', marginBottom: 0 }}>
+                  <h4 style={{ margin: 0 }}>Settings & Database</h4>
+                  <span style={{ color: "var(--obs-text)" }}>{showSettings ? '▲' : '▼'}</span>
                </div>
-             )}
-          </div>
+               
+               {showSettings && (
+                 <div style={{ marginTop: 15, maxHeight: '40vh', overflowY: 'auto', paddingRight: '5px' }}>
+                   <div className="setting-row">
+                      <span>Font Size ({fontSize}px)</span>
+                      <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} />
+                   </div>
+                   <div className="setting-row">
+                      <span>Lines per Slide ({rowsVisible})</span>
+                      <input type="range" min="1" max="8" value={rowsVisible} onChange={e => setRowsVisible(Number(e.target.value))} />
+                   </div>
+                   
+                   <h4 style={{ margin: '20px 0 10px 0', borderTop: '1px solid var(--obs-border-light)', paddingTop: 15 }}>Manage Database</h4>
+                   
+                   <button className="btn" style={{ width: '100%', marginBottom: 10, backgroundColor: 'var(--obs-btn-bg)' }} onClick={handleDownloadBackup}>
+                     💾 Download Backup
+                   </button>
+
+                   <input 
+                     type="file" 
+                     accept=".json" 
+                     ref={fileInputRef} 
+                     style={{ display: 'none' }} 
+                     onChange={handleFileUpload} 
+                   />
+                   <button className="btn btn-primary" style={{ width: '100%', marginBottom: 10 }} onClick={() => fileInputRef.current.click()}>
+                     📁 Upload JSON File
+                   </button>
+
+                   <div style={{ marginTop: 10 }}>
+                     <p style={{ fontSize: 12, margin: '0 0 5px 0', color: 'var(--obs-text)' }}>Or Paste JSON Data:</p>
+                     <textarea 
+                       className="paste-area" 
+                       value={jsonPaste} 
+                       onChange={e => setJsonPaste(e.target.value)}
+                       placeholder='{"1 - Song": ["Lyric 1", "Lyric 2"]}'
+                     />
+                     <button className="btn" style={{ width: '100%' }} onClick={handlePasteJSON}>
+                       Load Pasted Data
+                     </button>
+                   </div>
+
+                   <div className="danger-zone">
+                      <button className="btn btn-danger" style={{ width: '100%' }} onClick={handleHardReset}>
+                        ⚠️ Wipe & Reset Database
+                      </button>
+                   </div>
+                 </div>
+               )}
+            </div>
+          )}
         </div>
       );
     }
