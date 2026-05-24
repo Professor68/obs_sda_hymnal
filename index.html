@@ -130,6 +130,23 @@
     .btn-danger { background-color: var(--obs-danger); }
     .btn-danger:hover { background-color: var(--obs-danger-hover); }
 
+    /* Restored Feature Styles */
+    .tab-bar { display: flex; margin-bottom: 10px; gap: 5px; }
+    .tab-btn { flex: 1; padding: 8px; background: var(--obs-card); border: 1px solid var(--obs-border-light); color: var(--obs-text); cursor: pointer; border-radius: 4px; font-weight: bold; }
+    .tab-btn.active { background: var(--obs-btn-hover); color: white; border-color: var(--obs-primary); }
+    
+    .song-item-wrapper { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--obs-border-light); transition: background-color 0.2s; }
+    .song-item-wrapper:last-child { border-bottom: none; }
+    .song-title-click { flex: 1; padding: 12px; cursor: pointer; }
+    .song-title-click:hover { background-color: var(--obs-btn-bg); color: var(--obs-text-light); }
+    
+    .action-btn { background: transparent; border: none; color: var(--obs-text); cursor: pointer; padding: 10px; font-size: 16px; transition: color 0.2s; }
+    .action-btn:hover { color: var(--obs-primary); }
+    .action-btn.remove:hover { color: var(--obs-danger); }
+    
+    .paste-area { width: 100%; height: 80px; background: var(--obs-input-bg); color: var(--obs-text-light); border: 1px solid var(--obs-border-light); border-radius: 4px; padding: 8px; box-sizing: border-box; margin-bottom: 10px; resize: vertical; font-family: monospace; }
+    .search-row { display: flex; gap: 5px; margin-bottom: 15px; }
+
     /* Output Display Styles */
     .output-container {
       width: 100vw;
@@ -252,71 +269,96 @@
     function ControlDock() {
       const [activeDb, setActiveDb] = useState({});
       const [searchTerm, setSearchTerm] = useState('');
+      const [searchMode, setSearchMode] = useState('text'); // 'text' or 'number'
       const [showSettings, setShowSettings] = useState(false);
+      const [activeTab, setActiveTab] = useState('library'); // 'library' or 'schedule'
+      const [schedule, setSchedule] = useState([]);
+      const [jsonPaste, setJsonPaste] = useState('');
+      
       const [fontSize, setFontSize] = useState(48);
       const [rowsVisible, setRowsVisible] = useState(4);
       const [dbError, setDbError] = useState(null);
       const fileInputRef = useRef(null);
 
-      // Load DB on mount
+      // Load DB and Schedule on mount
       useEffect(() => {
         loadDatabase();
+        const savedSchedule = localStorage.getItem('obs_hymnal_schedule');
+        if (savedSchedule) {
+          try { setSchedule(JSON.parse(savedSchedule)); } catch(e) {}
+        }
       }, []);
+
+      // Save schedule changes
+      useEffect(() => {
+        localStorage.setItem('obs_hymnal_schedule', JSON.stringify(schedule));
+      }, [schedule]);
+
+      const processAndSaveData = (parsed) => {
+        let validDb = {};
+        let badEntriesFound = 0;
+        if (typeof parsed !== 'object' || parsed === null) throw new Error("Invalid structured data.");
+        
+        Object.keys(parsed).forEach(key => {
+          if (Array.isArray(parsed[key])) { validDb[key] = parsed[key]; }
+          else { badEntriesFound++; }
+        });
+
+        if (badEntriesFound > 0) setDbError(`Ignored ${badEntriesFound} corrupted song(s).`);
+        setActiveDb(validDb);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(validDb));
+      };
 
       const loadDatabase = () => {
         setDbError(null);
         try {
           const rawData = localStorage.getItem(STORAGE_KEY);
-          if (rawData) {
-            const parsed = JSON.parse(rawData);
-            
-            // Strict Data Validation
-            let validDb = {};
-            let badEntriesFound = 0;
-
-            if (typeof parsed !== 'object' || parsed === null) {
-                throw new Error("The uploaded file does not contain valid structured data.");
-            }
-
-            Object.keys(parsed).forEach(key => {
-              if (Array.isArray(parsed[key])) {
-                  validDb[key] = parsed[key];
-              } else {
-                  badEntriesFound++;
-              }
-            });
-
-            if (badEntriesFound > 0) {
-                setDbError(`Ignored ${badEntriesFound} corrupted song(s) to prevent crashing.`);
-            }
-
-            setActiveDb(validDb);
-          }
+          if (rawData) processAndSaveData(JSON.parse(rawData));
         } catch(e) {
-          console.error("Database load error:", e);
-          setDbError("Critical Error loading database. Please perform a Database Reset in Settings.");
+          setDbError("Critical Error loading database.");
         }
       };
 
       const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = (event) => {
           try {
-            const result = JSON.parse(event.target.result);
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
-            loadDatabase(); // Reloads and validates
-            alert('Hymnal database updated successfully!');
+            setDbError(null);
+            processAndSaveData(JSON.parse(event.target.result));
+            alert('Hymnal database uploaded safely!');
           } catch(error) {
-            alert('Upload failed: Invalid file format. Please ensure it is a valid JSON file.');
+            alert('Upload failed: Invalid file format.');
           }
         };
         reader.readAsText(file);
       };
 
+      const handlePasteJSON = () => {
+        try {
+          setDbError(null);
+          processAndSaveData(JSON.parse(jsonPaste));
+          setJsonPaste('');
+          alert('Database updated from pasted JSON!');
+        } catch(e) {
+          alert('Failed to load. Please ensure your pasted text is valid JSON.');
+        }
+      };
+
+      const handleDownloadBackup = () => {
+        const data = localStorage.getItem(STORAGE_KEY) || '{}';
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'hymnal_backup.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
       const sendToOutput = (title, lyrics) => {
+        if (!lyrics) return;
         const payload = { lyrics, fontSize, rows: rowsVisible };
         localStorage.setItem(ACTIVE_SONG_KEY, JSON.stringify(payload));
         channel.postMessage({ type: 'UPDATE_OUTPUT', ...payload });
@@ -328,28 +370,36 @@
       };
 
       const handleHardReset = () => {
-        const userInput = prompt('DANGER: This will delete your entire hymnal database.\n\nTo proceed, type the word DELETE below:');
-        
+        const userInput = prompt('DANGER: This will delete your entire hymnal database.\n\nType DELETE below:');
         if (userInput === 'DELETE') {
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(ACTIVE_SONG_KEY);
+          setSchedule([]);
           setActiveDb({});
           setSearchTerm('');
           setDbError(null);
           channel.postMessage({ type: 'CLEAR_OUTPUT' });
-          alert('Database has been completely wiped. You may now upload a fresh file.');
-        } else if (userInput !== null) {
-          alert('Reset canceled. You did not type DELETE.');
+          alert('Database wiped.');
         }
+      };
+
+      const addToSchedule = (title) => {
+        if (!schedule.includes(title)) setSchedule([...schedule, title]);
+      };
+
+      const removeFromSchedule = (title) => {
+        setSchedule(schedule.filter(t => t !== title));
       };
 
       const filteredSongs = Object.keys(activeDb).filter(title => {
         try {
           if (!title) return false;
+          if (!searchTerm) return true;
+          if (searchMode === 'number') {
+            return title.startsWith(searchTerm);
+          }
           return title.toLowerCase().includes(searchTerm.toLowerCase());
-        } catch(e) {
-          return false; // Safely skip broken titles
-        }
+        } catch(e) { return false; }
       });
 
       return (
@@ -362,37 +412,70 @@
             </div>
           </div>
 
-          {dbError && (
-             <div className="error-msg">
-                ⚠️ {dbError}
-             </div>
-          )}
+          {dbError && <div className="error-msg">⚠️ {dbError}</div>}
 
           {!showSettings ? (
             <React.Fragment>
-              <input 
-                type="text" 
-                className="search-input" 
-                placeholder="Search hymnal..." 
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-              />
-              <div className="song-list">
-                {Object.keys(activeDb).length === 0 ? (
-                   <div style={{ padding: 20, textAlign: 'center', color: 'var(--obs-border-light)' }}>
-                     No songs found. Open settings ⚙️ to upload database.
-                   </div>
-                ) : (
-                  filteredSongs.map((title) => (
-                    <div key={title} className="song-item" onClick={() => sendToOutput(title, activeDb[title])}>
-                      {title}
-                    </div>
-                  ))
-                )}
+              <div className="tab-bar">
+                <button className={`tab-btn ${activeTab === 'library' ? 'active' : ''}`} onClick={() => setActiveTab('library')}>Library</button>
+                <button className={`tab-btn ${activeTab === 'schedule' ? 'active' : ''}`} onClick={() => setActiveTab('schedule')}>Schedule ({schedule.length})</button>
               </div>
+
+              {activeTab === 'library' && (
+                <React.Fragment>
+                  <div className="search-row">
+                    <input 
+                      type="text" 
+                      className="search-input" 
+                      style={{ marginBottom: 0 }}
+                      placeholder={`Search by ${searchMode}...`} 
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                    />
+                    <button className="btn" onClick={() => setSearchMode(searchMode === 'text' ? 'number' : 'text')} title="Toggle Search Mode">
+                      {searchMode === 'text' ? 'Aa' : '123'}
+                    </button>
+                  </div>
+                  <div className="song-list">
+                    {Object.keys(activeDb).length === 0 ? (
+                       <div style={{ padding: 20, textAlign: 'center', color: 'var(--obs-border-light)' }}>
+                         No songs found. Open settings ⚙️ to upload.
+                       </div>
+                    ) : (
+                      filteredSongs.map((title) => (
+                        <div key={title} className="song-item-wrapper">
+                          <div className="song-title-click" onClick={() => sendToOutput(title, activeDb[title])}>
+                            {title}
+                          </div>
+                          <button className="action-btn" onClick={() => addToSchedule(title)} title="Add to Schedule">➕</button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </React.Fragment>
+              )}
+
+              {activeTab === 'schedule' && (
+                <div className="song-list">
+                  {schedule.length === 0 ? (
+                     <div style={{ padding: 20, textAlign: 'center', color: 'var(--obs-border-light)' }}>
+                       Schedule is empty. Add songs from the Library.
+                     </div>
+                  ) : (
+                    schedule.map((title) => (
+                      <div key={title} className="song-item-wrapper">
+                        <div className="song-title-click" onClick={() => sendToOutput(title, activeDb[title])}>
+                          {title}
+                        </div>
+                        <button className="action-btn remove" onClick={() => removeFromSchedule(title)} title="Remove">✖</button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </React.Fragment>
           ) : (
-            <div className="settings-panel">
+            <div className="settings-panel" style={{ overflowY: 'auto' }}>
                <h4 style={{ margin: '0 0 15px 0' }}>Display Settings</h4>
                <div className="setting-row">
                   <span>Font Size ({fontSize}px)</span>
@@ -403,7 +486,13 @@
                   <input type="range" min="1" max="8" value={rowsVisible} onChange={e => setRowsVisible(Number(e.target.value))} />
                </div>
                
-               <h4 style={{ margin: '25px 0 15px 0', borderTop: '1px solid var(--obs-border-light)', paddingTop: 15 }}>Database</h4>
+               <h4 style={{ margin: '20px 0 10px 0', borderTop: '1px solid var(--obs-border-light)', paddingTop: 15 }}>Manage Database</h4>
+               
+               {/* Restored: Backup Button */}
+               <button className="btn" style={{ width: '100%', marginBottom: 10, backgroundColor: 'var(--obs-btn-bg)' }} onClick={handleDownloadBackup}>
+                 💾 Download Backup
+               </button>
+
                <input 
                  type="file" 
                  accept=".json" 
@@ -412,11 +501,24 @@
                  onChange={handleFileUpload} 
                />
                <button className="btn btn-primary" style={{ width: '100%', marginBottom: 10 }} onClick={() => fileInputRef.current.click()}>
-                 Upload Hymnal File (.json)
+                 📁 Upload JSON File
                </button>
 
+               {/* Restored: Paste JSON */}
+               <div style={{ marginTop: 10 }}>
+                 <p style={{ fontSize: 12, margin: '0 0 5px 0', color: 'var(--obs-text)' }}>Or Paste JSON Data:</p>
+                 <textarea 
+                   className="paste-area" 
+                   value={jsonPaste} 
+                   onChange={e => setJsonPaste(e.target.value)}
+                   placeholder='{"1 - Song": ["Lyric 1", "Lyric 2"]}'
+                 />
+                 <button className="btn" style={{ width: '100%' }} onClick={handlePasteJSON}>
+                   Load Pasted Data
+                 </button>
+               </div>
+
                <div className="danger-zone">
-                  <p style={{ fontSize: 12, color: 'var(--obs-text)', marginTop: 0 }}>Troubleshooting / Reset</p>
                   <button className="btn btn-danger" style={{ width: '100%' }} onClick={handleHardReset}>
                     ⚠️ Wipe & Reset Database
                   </button>
